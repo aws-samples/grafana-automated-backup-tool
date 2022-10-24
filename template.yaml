@@ -1,0 +1,197 @@
+#
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: "AWS::Serverless-2016-10-31"
+Description: Lambda function to schedule Grafana components backups and execute restore
+
+Parameters:
+  GrafanaUrl:
+    Type: String
+    Description: Grafana URL.
+  BackupBucketName:
+    Type: String
+    Description: Grafana Backup Bucket name.
+  BackupBucketPrefix:
+    Type: String
+    Description: Grafana Backup prefix in the Bucket.
+    Default: grafana-backups
+  BackupSchedule:
+    Type: String
+    Description: Grafana Backup Schedule.
+    Default: cron(0 3 * * ? *)
+  GrafanaApiTokenParameter:
+    Type: String
+    Description: Grafana API Token SSM Parameter.
+  LogLevel:
+    Type: String
+    Default: INFO
+    Description: Lambda Log level
+    AllowedValues:
+      - INFO
+      - WARNING
+      - ERROR
+    ConstraintDescription: 'Select ''INFO'', ''WARNING'' or ''ERROR'''
+
+Resources:
+  GrafanaBackupBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BackupBucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LoggingConfiguration:
+        DestinationBucketName: !Ref GrafanaBackupAccessLogsBucket
+        LogFilePrefix: !Ref BackupBucketName
+      LifecycleConfiguration:
+        Rules:
+          - Id: IA+180-GLACIER+365-DELETE-3650
+            Status: Enabled
+            ExpirationInDays: 3650
+            Transitions:
+              - TransitionInDays: 180
+                StorageClass: STANDARD_IA
+              - TransitionInDays: 365
+                StorageClass: Glacier
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 2
+
+  GrafanaBackupBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref GrafanaBackupBucket
+      PolicyDocument:
+        Statement:
+          - Sid: "EncryptionInTransit_tls"
+            Effect: "Deny"
+            Principal: "*"
+            Action:
+              - "s3:*"
+            Resource: 
+              - !Join ["", ["arn:aws:s3:::", !Ref "GrafanaBackupBucket"]]
+              - !Join ["", ["arn:aws:s3:::", !Ref "GrafanaBackupBucket", "/*"]] 
+            Condition:
+              NumericLessThan: 
+                "s3:TlsVersion": "1.2"  
+          - Sid: "EncryptionInTransit_ssl"
+            Effect: "Deny"
+            Principal: "*"
+            Action:
+              - "s3:*"
+            Resource: 
+              - !Join ["", ["arn:aws:s3:::", !Ref "GrafanaBackupBucket"]]
+              - !Join ["", ["arn:aws:s3:::", !Ref "GrafanaBackupBucket", "/*"]] 
+            Condition:
+              Bool: 
+                "aws:SecureTransport": "false" 
+
+  GrafanaBackupAccessLogsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Join ["-", [!Ref "BackupBucketName", "accesslogs"]]
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: IA+180-GLACIER+365-DELETE-3650
+            Status: Enabled
+            ExpirationInDays: 3650
+            Transitions:
+              - TransitionInDays: 180
+                StorageClass: STANDARD_IA
+              - TransitionInDays: 365
+                StorageClass: Glacier
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 2
+
+  GrafanaBackupAccessLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref GrafanaBackupAccessLogsBucket
+      PolicyDocument:
+        Statement:
+          - Sid: "EncryptionInTransit_tls"
+            Effect: "Deny"
+            Principal: "*"
+            Action:
+              - "s3:*"
+            Resource: 
+              - !Join ["", ["arn:aws:s3:::", !Ref "GrafanaBackupAccessLogsBucket"]]
+              - !Join ["", ["arn:aws:s3:::", !Ref "GrafanaBackupAccessLogsBucket", "/*"]] 
+            Condition:
+              NumericLessThan: 
+                "s3:TlsVersion": "1.2"  
+          - Sid: "EncryptionInTransit_ssl"
+            Effect: "Deny"
+            Principal: "*"
+            Action:
+              - "s3:*"
+            Resource: 
+              - !Join ["", ["arn:aws:s3:::", !Ref "GrafanaBackupAccessLogsBucket"]]
+              - !Join ["", ["arn:aws:s3:::", !Ref "GrafanaBackupAccessLogsBucket", "/*"]] 
+            Condition:
+              Bool: 
+                "aws:SecureTransport": "false" 
+
+  GrafanaBackupFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: grafana-backup-restore
+      Description: Backup and restore Grafana components
+      Runtime: python3.9
+      Timeout: 900
+      CodeUri: src/
+      Handler: handler.handler
+      MemorySize: 1024
+      Environment:
+        Variables:
+          GRAFANA_URL: !Ref GrafanaUrl
+          BUCKET_NAME: !Ref GrafanaBackupBucket
+          BUCKET_PREFIX: !Ref BackupBucketPrefix
+          API_TOKEN_PARAMETER: !Ref GrafanaApiTokenParameter
+          LOG_LEVEL: !Ref LogLevel
+      Events:
+        ScheduleEvent:
+          Type: Schedule
+          Properties:
+            Schedule: !Ref BackupSchedule
+      Tracing: Active
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - AWSXrayWriteOnlyAccess
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - 's3:GetObject'
+                - 's3:PutObject'
+              Resource:
+                - !Sub '${GrafanaBackupBucket.Arn}/${BackupBucketPrefix}/*'
+            - Effect: Allow
+              Action:
+                - 's3:ListBucket'
+              Resource:
+                - !GetAtt GrafanaBackupBucket.Arn
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+              Resource:
+                - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${GrafanaApiTokenParameter}'    
+      Tags:
+        "Application": Grafana Backup Restore
+        "Purpose": Backup and restore Grafana

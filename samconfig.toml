@@ -1,0 +1,12 @@
+version = 0.1
+[default]
+[default.deploy]
+[default.deploy.parameters]
+stack_name = "grafana-automated-backup"
+s3_bucket = "aws-sam-cli-managed-default-samclisourcebucket-1hn7jd5nu9bsd"
+s3_prefix = "grafana-automated-backup"
+region = "eu-west-1"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "GrafanaUrl=\"https://g-58e2e0e347.grafana-workspace.eu-west-1.amazonaws.com\" BackupBucketName=\"melouaer-grafana-buckup\" BackupBucketPrefix=\"grafana-backups\" BackupSchedule=\"cron(0 3 * * ? *)\" GrafanaApiTokenParameter=\"/grafana/api_token\" LogLevel=\"INFO\""
+image_repositories = []
